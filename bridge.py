@@ -42,12 +42,19 @@ class ClaudeBridge:
             message,
         ]
 
+        if self.permission_mode == "bypassPermissions":
+            cmd.insert(1, "--allow-dangerously-skip-permissions")
+
         logger.info(f"Running: {' '.join(cmd[:6])}...")
+
+        env = os.environ.copy()
+        env["CLAUDE_CODE_IS_SANDBOX"] = "1"
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
 
         full_text = ""

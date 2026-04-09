@@ -41,6 +41,7 @@ class ClaudeBridge:
             "--permission-mode", self.permission_mode,
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--print",
             message,
         ]
@@ -63,6 +64,8 @@ class ClaudeBridge:
 
         full_text = ""
         result_text = ""
+        # Track what's happening for progress display
+        status_prefix = ""
 
         try:
             async for line in process.stdout:
@@ -77,15 +80,58 @@ class ClaudeBridge:
 
                 event_type = event.get("type", "")
 
-                if event_type == "assistant" and event.get("subtype") == "text":
-                    chunk = event.get("text", "")
-                    full_text += chunk
-                    if on_delta:
+                if event_type == "stream_event":
+                    # Real-time streaming chunks
+                    inner = event.get("event", {})
+                    inner_type = inner.get("type", "")
+
+                    if inner_type == "content_block_start":
+                        block = inner.get("content_block", {})
+                        if block.get("type") == "tool_use":
+                            tool_name = block.get("name", "tool")
+                            status_prefix = f"[Running {tool_name}...]\n\n"
+                            if on_delta:
+                                await on_delta(status_prefix + full_text)
+
+                    elif inner_type == "content_block_delta":
+                        delta = inner.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            full_text += delta["text"]
+                            if on_delta:
+                                await on_delta(status_prefix + full_text)
+
+                elif event_type == "assistant":
+                    # Complete assistant message — extract tool calls for status
+                    content = event.get("message", {}).get("content", [])
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "tool_use":
+                            tool_name = block.get("name", "tool")
+                            tool_input = block.get("input", {})
+                            # Show what tool is running
+                            desc = tool_input.get("description", "")
+                            cmd_str = tool_input.get("command", "")
+                            detail = desc or cmd_str
+                            if detail and len(detail) > 80:
+                                detail = detail[:77] + "..."
+                            status_prefix = f"[{tool_name}: {detail}]\n\n" if detail else f"[Running {tool_name}...]\n\n"
+                            if on_delta:
+                                await on_delta(status_prefix + full_text)
+                        elif block.get("type") == "text":
+                            # Complete text from assistant (non-streaming fallback)
+                            text = block.get("text", "")
+                            if text and not full_text:
+                                full_text = text
+
+                elif event_type == "user":
+                    # Tool result came back — clear status prefix
+                    status_prefix = ""
+                    if on_delta and full_text:
                         await on_delta(full_text)
 
                 elif event_type == "result":
                     result_text = event.get("result", full_text)
-                    # Also capture cost info
                     cost = event.get("cost_usd")
                     if cost is not None:
                         logger.info(f"Cost: ${cost:.4f}")

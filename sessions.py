@@ -14,9 +14,12 @@ class SessionInfo:
     first_user_message: str
     timestamp: str
     file_path: str
+    slug: str = ""
 
     @property
     def display_name(self) -> str:
+        if self.slug:
+            return self.slug
         msg = self.first_user_message
         if len(msg) > 80:
             msg = msg[:77] + "..."
@@ -46,6 +49,7 @@ def _parse_session_file(filepath: Path) -> SessionInfo | None:
     first_user_msg = ""
     timestamp = ""
     cwd = ""
+    slug = ""
 
     try:
         with open(filepath, "r") as f:
@@ -59,6 +63,10 @@ def _parse_session_file(filepath: Path) -> SessionInfo | None:
                     continue
 
                 entry_type = entry.get("type", "")
+
+                # Pick up slug (session name) from any entry that has it
+                if not slug and entry.get("slug"):
+                    slug = entry["slug"]
 
                 if entry_type == "user" and not first_user_msg:
                     msg = entry.get("message", {})
@@ -82,7 +90,7 @@ def _parse_session_file(filepath: Path) -> SessionInfo | None:
                     cwd = entry.get("cwd", "")
 
                 # Once we have what we need, stop reading
-                if first_user_msg:
+                if first_user_msg and slug:
                     break
 
     except (OSError, PermissionError):
@@ -97,7 +105,28 @@ def _parse_session_file(filepath: Path) -> SessionInfo | None:
         first_user_message=first_user_msg,
         timestamp=timestamp,
         file_path=str(filepath),
+        slug=slug,
     )
+
+
+def _load_session_names() -> dict[str, str]:
+    """Load user-assigned session names from ~/.claude/sessions/*.json."""
+    names: dict[str, str] = {}
+    sessions_dir = Path(os.path.expanduser("~/.claude/sessions"))
+    if not sessions_dir.exists():
+        return names
+
+    for f in sessions_dir.glob("*.json"):
+        try:
+            with open(f) as fh:
+                data = json.load(fh)
+            sid = data.get("sessionId", "")
+            name = data.get("name", "")
+            if sid and name:
+                names[sid] = name
+        except (json.JSONDecodeError, OSError):
+            continue
+    return names
 
 
 def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
@@ -112,6 +141,9 @@ def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
     if not projects_path.exists():
         return []
 
+    # Load user-assigned names
+    user_names = _load_session_names()
+
     sessions = []
     for project_dir in projects_path.iterdir():
         if not project_dir.is_dir():
@@ -124,6 +156,9 @@ def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
             if info:
                 if not info.cwd:
                     info.cwd = decoded_cwd
+                # User-assigned name takes priority over slug
+                if info.session_id in user_names:
+                    info.slug = user_names[info.session_id]
                 sessions.append(info)
 
     # Sort by file modification time (most recent first)

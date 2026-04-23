@@ -220,17 +220,18 @@ class ClaudeBot(discord.Client):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        logger.info(f"Message from {message.author} (id={message.author.id}): {message.content[:50]}")
         if not is_allowed_message(message):
+            logger.warning(f"Rejected: user {message.author.id} not in allowed list (expected {ALLOWED_USER_ID})")
             return
 
         channel_id = message.channel.id
         session_id = active_sessions.get(channel_id)
 
         if not session_id:
-            if self.user in message.mentions:
-                await message.reply(
-                    "No active session in this channel. Use `/sessions` to pick one."
-                )
+            await message.reply(
+                "No active session in this channel. Use `/sessions` to pick one."
+            )
             return
 
         session = get_session_by_id(session_id)

@@ -109,28 +109,48 @@ def _parse_session_file(filepath: Path) -> SessionInfo | None:
     )
 
 
-def _load_session_names() -> dict[str, str]:
-    """Load user-assigned session names from ~/.claude/sessions/*.json."""
-    names: dict[str, str] = {}
+def _load_session_registry() -> dict[str, dict]:
+    """Load session registry from ~/.claude/sessions/*.json.
+
+    Returns a dict of session_id -> {name, cwd, live} for each registered session.
+    Each file is named by PID; we check if the PID is still alive.
+    """
+    registry: dict[str, dict] = {}
     sessions_dir = Path(os.path.expanduser("~/.claude/sessions"))
     if not sessions_dir.exists():
-        return names
+        return registry
 
     for f in sessions_dir.glob("*.json"):
         try:
             with open(f) as fh:
                 data = json.load(fh)
             sid = data.get("sessionId", "")
-            name = data.get("name", "")
-            if sid and name:
-                names[sid] = name
+            if not sid:
+                continue
+            pid_str = f.stem
+            live = False
+            try:
+                pid = int(pid_str)
+                os.kill(pid, 0)
+                live = True
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+            registry[sid] = {
+                "name": data.get("name", ""),
+                "cwd": data.get("cwd", ""),
+                "live": live,
+            }
         except (json.JSONDecodeError, OSError):
             continue
-    return names
+    return registry
 
 
-def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
-    """List all Claude Code sessions across all project directories.
+def list_sessions(claude_dir: str | None = None, live_only: bool = True) -> list[SessionInfo]:
+    """List Claude Code sessions.
+
+    Args:
+        claude_dir: Override the projects directory path.
+        live_only: If True, only return sessions with a running process.
 
     Returns sessions sorted by most recent first.
     """
@@ -141,8 +161,8 @@ def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
     if not projects_path.exists():
         return []
 
-    # Load user-assigned names
-    user_names = _load_session_names()
+    registry = _load_session_registry()
+    live_ids = {sid for sid, info in registry.items() if info["live"]} if live_only else None
 
     sessions = []
     for project_dir in projects_path.iterdir():
@@ -152,16 +172,19 @@ def list_sessions(claude_dir: str | None = None) -> list[SessionInfo]:
         decoded_cwd = _decode_project_dir(project_dir.name)
 
         for session_file in project_dir.glob("*.jsonl"):
+            session_id = session_file.stem
+            if live_only and live_ids is not None and session_id not in live_ids:
+                continue
+
             info = _parse_session_file(session_file)
             if info:
                 if not info.cwd:
                     info.cwd = decoded_cwd
-                # User-assigned name takes priority over slug
-                if info.session_id in user_names:
-                    info.slug = user_names[info.session_id]
+                reg = registry.get(info.session_id, {})
+                if reg.get("name"):
+                    info.slug = reg["name"]
                 sessions.append(info)
 
-    # Sort by file modification time (most recent first)
     sessions.sort(key=lambda s: os.path.getmtime(s.file_path), reverse=True)
     return sessions
 

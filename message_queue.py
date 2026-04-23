@@ -27,17 +27,17 @@ class ChatQueue:
         return self._queues[chat_id]
 
     async def enqueue(self, chat_id: int, text: str, processor) -> int:
-        """Add a message to the chat's queue. Returns current queue depth (0 = processing immediately)."""
+        """Add a message to the chat's queue. Returns 0 if processing immediately, else queue position."""
         q = self._get_queue(chat_id)
-        self._processors[chat_id] = processor
+        already_busy = chat_id in self._workers and not self._workers[chat_id].done()
+
         q.put_nowait((text, processor))
 
-        # Start worker if not running
-        if chat_id not in self._workers or self._workers[chat_id].done():
+        if not already_busy:
             self._workers[chat_id] = asyncio.create_task(self._worker(chat_id))
+            return 0
 
-        depth = q.qsize()
-        return depth
+        return q.qsize()
 
     async def _worker(self, chat_id: int):
         q = self._get_queue(chat_id)

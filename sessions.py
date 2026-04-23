@@ -195,3 +195,39 @@ def get_session_by_id(session_id: str, claude_dir: str | None = None) -> Session
         if session.session_id == session_id or session.session_id.startswith(session_id):
             return session
     return None
+
+
+def get_last_assistant_message(session: SessionInfo, max_length: int = 500) -> str | None:
+    """Extract the last assistant text message from a session JSONL file."""
+    last_text = None
+    try:
+        with open(session.file_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "assistant":
+                    continue
+                content = entry.get("message", {}).get("content", [])
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append(block["text"])
+                    text = "\n".join(parts)
+                else:
+                    continue
+                if text.strip():
+                    last_text = text.strip()
+    except (OSError, PermissionError):
+        return None
+
+    if last_text and len(last_text) > max_length:
+        last_text = last_text[:max_length - 3] + "..."
+    return last_text

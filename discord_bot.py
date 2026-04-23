@@ -11,7 +11,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from bridge import ClaudeBridge, PermissionRequest, wrap_channel_message
-from sessions import list_sessions, get_session_by_id
+from sessions import list_sessions, get_session_by_id, get_last_assistant_message
 from formatter import format_discord, split_message, DISCORD_MAX_LEN
 from message_queue import ChatQueue
 
@@ -499,7 +499,11 @@ class SessionSelectView(discord.ui.View):
             )
             embed.add_field(name="Directory", value=f"`{session.cwd}`", inline=False)
             embed.add_field(name="Topic", value=session.display_name, inline=False)
-            embed.set_footer(text="Send messages to continue this session.")
+            last_msg = get_last_assistant_message(session)
+            if last_msg:
+                embed.add_field(name="Last message", value=last_msg, inline=False)
+            else:
+                embed.set_footer(text="Send messages to continue this session.")
             await interaction.response.send_message(embed=embed)
         else:
             await interaction.response.send_message(

@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 from bridge import ClaudeBridge, PermissionRequest, wrap_channel_message
-from sessions import list_sessions, get_session_by_id
+from sessions import list_sessions, get_session_by_id, get_last_assistant_message
 from formatter import (
     format_telegram_html,
     split_message,
@@ -229,12 +229,17 @@ async def callback_pick_session(update: Update, context: ContextTypes.DEFAULT_TY
 
     session = get_session_by_id(session_id)
     if session:
-        await query.edit_message_text(
+        text = (
             f"Connected to session {session.short_id}\n"
             f"Directory: {session.cwd}\n"
             f"Topic: {session.display_name}\n\n"
-            "Send messages to continue this session."
         )
+        last_msg = get_last_assistant_message(session)
+        if last_msg:
+            text += f"Last message:\n\n{last_msg}"
+        else:
+            text += "Send messages to continue this session."
+        await query.edit_message_text(text)
     else:
         await query.edit_message_text(
             f"Connected to session {session_id[:8]}.\nSend messages to continue."

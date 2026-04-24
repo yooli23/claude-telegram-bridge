@@ -321,29 +321,22 @@ class ClaudeBot(discord.Client):
 
     def _register_project_commands(self):
 
-        @self.tree.command(name="setup", description="Bind this forum channel to a project")
+        @self.tree.command(name="setup", description="Bind a forum channel to a project")
         @app_commands.describe(
+            forum_channel="The forum channel to bind",
             project_dir="Local project directory path",
             code_repo="GitHub code repo (org/repo)",
             paper_repo="GitHub paper repo (org/repo, optional)",
         )
         async def cmd_setup(
             interaction: discord.Interaction,
+            forum_channel: discord.ForumChannel,
             project_dir: str,
             code_repo: str = "",
             paper_repo: str = "",
         ):
             if not is_allowed(interaction):
                 await interaction.response.send_message("Unauthorized.", ephemeral=True)
-                return
-
-            channel = interaction.channel
-            if not isinstance(channel, discord.ForumChannel):
-                await interaction.response.send_message(
-                    "This command only works in **Forum channels**. "
-                    "Create a Forum channel for your project first.",
-                    ephemeral=True,
-                )
                 return
 
             expanded = os.path.expanduser(project_dir)
@@ -356,7 +349,7 @@ class ClaudeBot(discord.Client):
             await interaction.response.defer()
 
             binding = config_store.bind(
-                channel_id=channel.id,
+                channel_id=forum_channel.id,
                 project_dir=expanded,
                 code_repo=code_repo,
                 paper_repo=paper_repo,
@@ -402,25 +395,29 @@ class ClaudeBot(discord.Client):
             await interaction.followup.send(embed=embed)
 
         @self.tree.command(name="spawn", description="Spawn a new agent task (creates a forum post)")
-        @app_commands.describe(task="Description of the task for the agent")
-        async def cmd_spawn(interaction: discord.Interaction, task: str):
+        @app_commands.describe(
+            task="Description of the task for the agent",
+            forum_channel="Target forum channel (optional if used inside one)",
+        )
+        async def cmd_spawn(
+            interaction: discord.Interaction,
+            task: str,
+            forum_channel: discord.ForumChannel | None = None,
+        ):
             if not is_allowed(interaction):
                 await interaction.response.send_message("Unauthorized.", ephemeral=True)
                 return
 
-            channel = interaction.channel
-            forum_channel = None
-
-            # If used in a forum channel directly
-            if isinstance(channel, discord.ForumChannel):
-                forum_channel = channel
-            # If used inside a forum thread, get the parent
-            elif isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.ForumChannel):
-                forum_channel = channel.parent
+            if not forum_channel:
+                channel = interaction.channel
+                if isinstance(channel, discord.ForumChannel):
+                    forum_channel = channel
+                elif isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.ForumChannel):
+                    forum_channel = channel.parent
 
             if not forum_channel:
                 await interaction.response.send_message(
-                    "Use `/spawn` in a Forum channel that has been set up with `/setup`.",
+                    "Specify a forum channel or use this command inside one.",
                     ephemeral=True,
                 )
                 return
@@ -573,7 +570,7 @@ class ClaudeBot(discord.Client):
 
             if not parent_id:
                 await interaction.response.send_message(
-                    "Use `/status` in a project forum channel.", ephemeral=True
+                    "No project found. Run `/setup` first or use this in a project forum thread.", ephemeral=True
                 )
                 return
 
@@ -625,7 +622,7 @@ class ClaudeBot(discord.Client):
             binding = _get_project_binding(interaction)
             if not binding:
                 await interaction.response.send_message(
-                    "Use `/note` in a project forum channel.", ephemeral=True
+                    "No project found. Run `/setup` first.", ephemeral=True
                 )
                 return
 
@@ -682,7 +679,7 @@ class ClaudeBot(discord.Client):
             binding = _get_project_binding(interaction)
             if not binding:
                 await interaction.response.send_message(
-                    "Use `/notes` in a project forum channel.", ephemeral=True
+                    "No project found. Run `/setup` first.", ephemeral=True
                 )
                 return
 
@@ -712,7 +709,7 @@ class ClaudeBot(discord.Client):
             binding = _get_project_binding(interaction)
             if not binding:
                 await interaction.response.send_message(
-                    "Use `/board` in a project forum channel.", ephemeral=True
+                    "No project found. Run `/setup` first.", ephemeral=True
                 )
                 return
 
@@ -1127,6 +1124,14 @@ def _get_forum_parent_id(interaction: discord.Interaction) -> int | None:
         return channel.id
     if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.ForumChannel):
         return channel.parent_id
+    # Not in a forum — try to find the only project in this server
+    if interaction.guild:
+        matches = [
+            cid for cid in config_store._bindings
+            if interaction.guild.get_channel(cid) is not None
+        ]
+        if len(matches) == 1:
+            return matches[0]
     return None
 
 

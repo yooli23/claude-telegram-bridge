@@ -475,11 +475,14 @@ class ClaudeBot(discord.Client):
                 result = json.loads(stdout.decode())
                 session_id = result.get("session_id", "")
             except (json.JSONDecodeError, KeyError):
-                pass
+                logger.error(f"Failed to parse session output: {stdout.decode()[:500]}")
 
             if not session_id:
+                err = stderr.decode().strip() if stderr else "unknown error"
+                out = stdout.decode().strip()[:300] if stdout else "no output"
+                logger.error(f"Session creation failed. stderr: {err}, stdout: {out}")
                 await remove_worktree(binding.project_dir, worktree_path)
-                await interaction.followup.send("Failed to create Claude session.")
+                await interaction.followup.send(f"Failed to create Claude session.\n```\n{err[:500]}\n```")
                 return
 
             # Create the forum post (thread)

@@ -499,6 +499,7 @@ class ClaudeBot(discord.Client):
                 cmd.insert(1, "--allow-dangerously-skip-permissions")
 
             spawn_env = os.environ.copy()
+            spawn_env["IS_SANDBOX"] = "1"
             if git_env:
                 spawn_env.update(git_env)
 

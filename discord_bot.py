@@ -524,6 +524,153 @@ class ClaudeBot(discord.Client):
 
             await interaction.response.send_message(embed=embed)
 
+        @self.tree.command(name="note", description="Add a note to the project's NOTES.md")
+        @app_commands.describe(content="Note to add (related work, discussion point, resource)")
+        async def cmd_note(interaction: discord.Interaction, content: str):
+            if not is_allowed(interaction):
+                await interaction.response.send_message("Unauthorized.", ephemeral=True)
+                return
+
+            binding = _get_project_binding(interaction)
+            if not binding:
+                await interaction.response.send_message(
+                    "Use `/note` in a project forum channel.", ephemeral=True
+                )
+                return
+
+            await interaction.response.defer()
+
+            from datetime import date
+            today = date.today().isoformat()
+            user_name = interaction.user.display_name
+
+            notes_path = os.path.join(binding.project_dir, "NOTES.md")
+            entry = f"- {content}\n  - Added by: {user_name}, {today}\n"
+
+            if not os.path.exists(notes_path):
+                header = "# Project Notes\n\n## Notes\n\n"
+                with open(notes_path, "w") as f:
+                    f.write(header + entry)
+            else:
+                with open(notes_path, "a") as f:
+                    f.write(entry)
+
+            # Git add and commit
+            proc = await asyncio.create_subprocess_exec(
+                "git", "add", "NOTES.md",
+                cwd=binding.project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+            proc = await asyncio.create_subprocess_exec(
+                "git", "commit", "-m", f"Add note from {user_name}: {content[:60]}",
+                cwd=binding.project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+            await interaction.followup.send(f"Added to NOTES.md:\n> {content}")
+
+        @self.tree.command(name="notes", description="Show project NOTES.md")
+        async def cmd_notes(interaction: discord.Interaction):
+            if not is_allowed(interaction):
+                await interaction.response.send_message("Unauthorized.", ephemeral=True)
+                return
+
+            binding = _get_project_binding(interaction)
+            if not binding:
+                await interaction.response.send_message(
+                    "Use `/notes` in a project forum channel.", ephemeral=True
+                )
+                return
+
+            notes_path = os.path.join(binding.project_dir, "NOTES.md")
+            if not os.path.exists(notes_path):
+                await interaction.response.send_message("No NOTES.md found. Use `/note` to add the first one.")
+                return
+
+            with open(notes_path, "r") as f:
+                content = f.read()
+
+            if not content.strip():
+                await interaction.response.send_message("NOTES.md is empty.")
+                return
+
+            chunks = split_message(content, DISCORD_MAX_LEN)
+            await interaction.response.send_message(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+
+        @self.tree.command(name="board", description="Full project dashboard: status, tasks, PRs, notes")
+        async def cmd_board(interaction: discord.Interaction):
+            if not is_allowed(interaction):
+                await interaction.response.send_message("Unauthorized.", ephemeral=True)
+                return
+
+            binding = _get_project_binding(interaction)
+            if not binding:
+                await interaction.response.send_message(
+                    "Use `/board` in a project forum channel.", ephemeral=True
+                )
+                return
+
+            await interaction.response.defer()
+
+            parent_id = _get_forum_parent_id(interaction)
+            sections = []
+
+            # Header
+            sections.append(f"## Project: `{binding.project_dir}`")
+            if binding.code_repo:
+                sections.append(f"Code: `{binding.code_repo}` | Paper: `{binding.paper_repo or 'none'}`")
+
+            # STATUS.md summary
+            status_path = os.path.join(binding.project_dir, "STATUS.md")
+            if os.path.exists(status_path):
+                with open(status_path, "r") as f:
+                    status_content = f.read().strip()
+                if status_content:
+                    if len(status_content) > 600:
+                        status_content = status_content[:597] + "..."
+                    sections.append(f"\n**Status:**\n{status_content}")
+
+            # Active tasks
+            tasks = config_store.get_tasks_for_channel(parent_id) if parent_id else []
+            if tasks:
+                task_lines = []
+                for t in tasks:
+                    icon = {"active": "\U0001f527", "done": "✅", "review": "\U0001f4cb", "error": "❌"}.get(t.status, "❓")
+                    cost = bridge.cost_tracker.get(t.session_id)
+                    task_lines.append(f"{icon} **{t.description[:50]}** — {t.user_name} (${cost:.2f}) <#{t.thread_id}>")
+                sections.append("\n**Active Tasks:**\n" + "\n".join(task_lines))
+            else:
+                sections.append("\n**Active Tasks:** none")
+
+            # Recent PRs from GitHub
+            if binding.code_repo:
+                pr_text = await _fetch_recent_prs(binding.code_repo)
+                if pr_text:
+                    sections.append(f"\n**Recent PRs ({binding.code_repo}):**\n{pr_text}")
+
+            # Recent notes
+            notes_path = os.path.join(binding.project_dir, "NOTES.md")
+            if os.path.exists(notes_path):
+                with open(notes_path, "r") as f:
+                    lines = f.readlines()
+                note_entries = [l.rstrip() for l in lines if l.startswith("- ")]
+                if note_entries:
+                    recent = note_entries[-5:]
+                    sections.append("\n**Recent Notes:**\n" + "\n".join(recent))
+
+            full_text = "\n".join(sections)
+            chunks = split_message(full_text, DISCORD_MAX_LEN)
+            await interaction.followup.send(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+
     # ── Message handling ─────────────────────────────────────
 
     async def on_ready(self):
@@ -862,6 +1009,49 @@ async def _process_single_message(
 
 
 # ── Helpers ───────────────────────────────────────────────
+
+
+def _get_forum_parent_id(interaction: discord.Interaction) -> int | None:
+    channel = interaction.channel
+    if isinstance(channel, discord.ForumChannel):
+        return channel.id
+    if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.ForumChannel):
+        return channel.parent_id
+    return None
+
+
+def _get_project_binding(interaction: discord.Interaction):
+    parent_id = _get_forum_parent_id(interaction)
+    if parent_id:
+        return config_store.get_binding(parent_id)
+    return None
+
+
+async def _fetch_recent_prs(repo: str, limit: int = 5) -> str:
+    """Fetch recent PRs from GitHub using gh CLI."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "pr", "list", "--repo", repo, "--limit", str(limit),
+            "--json", "number,title,state,author,url",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return ""
+
+        prs = json.loads(stdout.decode())
+        if not prs:
+            return "No open PRs"
+
+        lines = []
+        for pr in prs:
+            author = pr.get("author", {}).get("login", "?")
+            lines.append(f"- #{pr['number']} {pr['title']} ({author})")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Failed to fetch PRs: {e}")
+        return ""
 
 
 async def _download_discord_attachments(
